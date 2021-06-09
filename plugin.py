@@ -6,7 +6,7 @@
 # Author: DebugBill
 #
 """
-<plugin key="linktap" name="Link-Tap Watering System plugin" author="DebugBill" version="0.1.0" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
+<plugin key="linktap" name="Link-Tap Watering System plugin" author="DebugBill" version="0.1" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
     <description>
         <h2>Link-Tap watering system</h2><br/>
         This plugin will allow Domoticz to read data from the Link-Tap cloud API.
@@ -52,7 +52,7 @@ import requests
 class BasePlugin:
     enabled = False
     def __init__(self):
-        #self.var = 123
+        self.var = 123
         return
 
     def onStart(self):
@@ -61,7 +61,8 @@ class BasePlugin:
         else:
             Domoticz.Debugging(0)
         Domoticz.Log("onStart called")
-	DumpAllToLog()
+        for x in Parameters:
+            Domoticz.Log(str(x) + ": " + str(Parameters[x]))
 
     def onStop(self):
         Domoticz.Log("onStop called")
