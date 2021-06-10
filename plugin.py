@@ -30,7 +30,7 @@
         <param field="Mode3" label="Key" width="300px" required="true"/>
         <param field="Mode4" label="Polling internval" width="100px">
             <options>
-                <option label="5mn" value="10" defautl="true"/>
+                <option label="5mn" value="10" default="true"/>
                 <option label="10mn" value="20"/>
                 <option label="15mn" value="30"/>
                 <option label="30mn" value="60" />
@@ -38,10 +38,12 @@
         </param>
         <param field="Mode6" label="Debug" width="75px">
             <options>
-                <option label="True" value="Debug"/>
-                <option label="False" value="Normal"  default="true" />
+                <option label="0" value=0/>
+                <option label="1" value=1/>
+                <option label="2" value=2/>
+                <option label="7" value=7/>
             </options>
-        </param>
+	</param>
     </params>
 </plugin>
 """
@@ -52,17 +54,31 @@ import requests
 class BasePlugin:
     enabled = False
     def __init__(self):
-        self.var = 123
-        return
+        self.timer = 0
+        self.token = ''
+        self.url = ''
+        self.headers = ''
 
     def onStart(self):
-        if Parameters["Mode6"] == "Debug":
-            Domoticz.Debugging(1)
-        else:
-            Domoticz.Debugging(0)
+        # 2 sec resolution is enough
+        Domoticz.Heartbeat(2)
+        self.token = {'username':Parameters["Mode2"],'apiKey':Parameters['Mode3']}
+        self.url = Parameters['Mode1'] + 'api/'
+        self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        Domoticz.Debugging(int(Parameters["Mode6"]))
         Domoticz.Log("onStart called")
-        for x in Parameters:
-            Domoticz.Log(str(x) + ": " + str(Parameters[x]))
+
+        post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers)
+
+        data=json.loads(post.text)
+        for gateway in data['devices']:
+            print(gateway['name'])
+            for taplinker in gateway['taplinker']:
+               taplinkerName = taplinker['taplinkerName']
+               taplinkerId = taplinker['taplinkerId']
+        if (len(Devices) == 0):
+            Domoticz.Device(Name=taplinkerName,  Unit=1, TypeName='Waterflow',  DeviceID=taplinkerId).Create()
+            Domotics.Status("Device " + taplinkerName + " created")
 
     def onStop(self):
         Domoticz.Log("onStop called")
@@ -83,7 +99,12 @@ class BasePlugin:
         Domoticz.Log("onDisconnect called")
 
     def onHeartbeat(self):
-        Domoticz.Log("onHeartbeat called")
+        Domoticz.Log("onHeartbeat called " + str(self.timer) + " times")
+        if self.timer == 0:
+            DumpAllToLog()
+            GetAllDevices()
+        self.timer += 1
+        Devices[1].Update(nValue=0, sValue='Test', SignalLevel=5, BatteryLevel=100)
 
 global _plugin
 _plugin = BasePlugin()
@@ -182,4 +203,39 @@ def DumpAllToLog():
     DumpImagesToLog()
     DumpParametersToLog()
     DumpSettingsToLog()
+    return
 
+# API Documentation 1.2: https://www.link-tap.com/#!/api-for-developers
+
+# Get All Devices (Gateway and Taplinker)'s Info
+def GetAllDevices():
+    data = {'username':Parameters["Mode2"],
+    'apiKey':Parameters['Mode3'],}
+    url = Parameters['Mode1'] + 'api/getAllDevices'
+    headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+    r = requests.post(url, json=data, headers=headers)
+#    Domoticz.Error(url)
+#    Domoticz.Error(r.text)
+
+#POST https://www.link-tap.com/api/getAllDevices
+#Please note: Rate limiting is applied for this API. The minimum interval of calling this API is 5 minutes.
+
+#Body object:
+#username: Required. String type. Your LinkTap account's username
+#apiKey: Required. String type. Your API key
+#Response (success):
+#result: 'ok'
+#devices: Array of device's info, including gateway and taplinker's online/offline status, device ID and name, remaining battery, wireless signal strength, current watering plan and watering status, etc.
+
+#Explanation of some fields:
+#workMode: currently activated work mode. ‘O’ is for Odd-Even Mode, ‘M’ is for Instant Mode, ‘I’ is for Interval Mode, ‘T’ is for 7-Day Mode, ‘Y’ is for Month Mode, ‘N’ means no work mode assigned.
+#slot: current watering plan. 'H' represents hour, 'M' represents minute, 'D' represents duration.
+#vel: latest flow rate (unit: ml per minute. For G2 and G2S only).
+#fall: fall incident flag (boolean. For G2 and G2S only).
+#valveBroken: valve failed to open flag (boolean. For G2 and G2S only).
+#noWater: water cut-off flag (boolean. For G2 and G2S only).
+#Response (failure):
+#result: 'error'
+#message: various error messages
+#Curl example:
+#curl -d "username=YourUsername&apiKey=YourApiKey" -X POST https://www.link-tap.com/api/getAllDevices
