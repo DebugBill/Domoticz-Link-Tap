@@ -2,8 +2,10 @@
 # coding: utf-8 -*-
 #
 # Link-Tap Domoticz plugin
-# 
-# Author: DebugBill
+#
+# API Documentation 1.2: https://www.link-tap.com/#!/api-for-developers
+#
+# Author: DebugBill June 2021
 #
 """
 <plugin key="linktap" name="Link-Tap Watering System plugin" author="DebugBill" version="0.1" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
@@ -28,20 +30,24 @@
         <param field="Mode1" label="Link-Tap API URL" width="300px" required="true" default="https://www.link-tap.com/"/>
         <param field="Mode2" label="User" width="300px" required="true"/>
         <param field="Mode3" label="Key" width="300px" required="true"/>
-        <param field="Mode4" label="Polling internval" width="100px">
+        <param field="Mode4" label="Polling interval" width="100px">
             <options>
-                <option label="5mn" value="10" default="true"/>
-                <option label="10mn" value="20"/>
-                <option label="15mn" value="30"/>
-                <option label="30mn" value="60" />
+                <option label="5mn" value="15" default="true"/>
+                <option label="10mn" value="30"/>
+                <option label="15mn" value="45"/>
+                <option label="30mn" value="9O" />
             </options>
         </param>
-        <param field="Mode6" label="Debug" width="75px">
+        <param field="Mode6" label="Debug Level" width="300px">
             <options>
-                <option label="0" value=0/>
-                <option label="1" value=1/>
-                <option label="2" value=2/>
-                <option label="7" value=7/>
+                <option label="None" value="0"  default="true"/>
+                <option label="Plugin Verbose" value="2"/>
+                <option label="Domoticz Plugin" value="4"/>
+                <option label="Domoticz Devices" value="8"/>
+                <option label="Domoticz Connections" value="16"/>
+                <option label="Verbose+Plugin+Devices" value="14"/>
+                <option label="Verbose+Plugin+Devices+Connections" value="30"/>
+                <option label="Domoticz Framework - All (useless but in case)" value="1"/>
             </options>
 	</param>
     </params>
@@ -54,31 +60,51 @@ import requests
 class BasePlugin:
     enabled = False
     def __init__(self):
-        self.timer = 0
+        self.timer = -1
         self.token = ''
         self.url = ''
         self.headers = ''
+        self.taplinkers = dict() # All taplinkers by id
+        self.devices = dict()
 
     def onStart(self):
         # 2 sec resolution is enough
-        Domoticz.Heartbeat(2)
+        Domoticz.Heartbeat(20)
         self.token = {'username':Parameters["Mode2"],'apiKey':Parameters['Mode3']}
         self.url = Parameters['Mode1'] + 'api/'
         self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         Domoticz.Debugging(int(Parameters["Mode6"]))
-        Domoticz.Log("onStart called")
+        Domoticz.Debug("onStart called")
 
+        # Build list of devices in Domoticz
+        for device in Devices:
+            Domoticz.Debug("Device:" + str(device) + " " + str(Devices[device].DeviceID) + " - " + str(Devices[device]))
+            self.devices[Devices[device].DeviceID] = device
+            Domoticz.Debug("List of devices: " + Devices[device].DeviceID +  "," + str(device))
+
+        # Build list of devices on API and create missing ones
         post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers)
-
         data=json.loads(post.text)
         for gateway in data['devices']:
-            print(gateway['name'])
+            gatewayName = gateway['name']
             for taplinker in gateway['taplinker']:
-               taplinkerName = taplinker['taplinkerName']
-               taplinkerId = taplinker['taplinkerId']
-        if (len(Devices) == 0):
-            Domoticz.Device(Name=taplinkerName,  Unit=1, TypeName='Waterflow',  DeviceID=taplinkerId).Create()
-            Domotics.Status("Device " + taplinkerName + " created")
+                self.taplinkers[taplinker['taplinkerId']] = taplinker['taplinkerName']
+                if not taplinker['taplinkerId'] in self.devices:
+                    # Find a hole in the device IDs
+                    hole = 1
+                    if len(Devices) > 0:
+                        sortedIDs = sorted(self.devices.values())
+                        previous = 0
+                        for id in sortedIDs:
+                            if id != previous+1:
+                                hole = previous+1
+                                break
+                            else:
+                                previous = id
+                                hole = id + 1
+                    Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'],  Unit=hole, TypeName='Waterflow',  DeviceID=taplinker['taplinkerId']).Create()
+                    self.device[taplinker['taplinkerId']] = hole 
+                    Domoticz.Log("Device " + taplinker['taplinkerName'] + " with ID " + taplinker['taplinkerId'] + " created")
 
     def onStop(self):
         Domoticz.Log("onStop called")
@@ -99,12 +125,17 @@ class BasePlugin:
         Domoticz.Log("onDisconnect called")
 
     def onHeartbeat(self):
-        Domoticz.Log("onHeartbeat called " + str(self.timer) + " times")
-        if self.timer == 0:
-            DumpAllToLog()
-            GetAllDevices()
         self.timer += 1
-        Devices[1].Update(nValue=0, sValue='Test', SignalLevel=5, BatteryLevel=100)
+        Domoticz.Debug("onHeartbeat called " + str(self.timer) + " times")
+        if self.timer % int(Parameters['Mode4']) == 0:
+            post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers)
+            data=json.loads(post.text)
+            for gateway in data['devices']:
+                for taplinker in gateway['taplinker']:
+                    taplinkerId = taplinker['taplinkerId']
+                    if taplinkerId in self.devices:
+                        Domoticz.Log("Updating device: " + taplinker['taplinkerName'] + " with ID " + taplinkerId)
+                        Devices[self.devices[taplinkerId]].Update(nValue=0, sValue='Test', SignalLevel=int(taplinker['signal']), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
 
 global _plugin
 _plugin = BasePlugin()
@@ -205,37 +236,4 @@ def DumpAllToLog():
     DumpSettingsToLog()
     return
 
-# API Documentation 1.2: https://www.link-tap.com/#!/api-for-developers
 
-# Get All Devices (Gateway and Taplinker)'s Info
-def GetAllDevices():
-    data = {'username':Parameters["Mode2"],
-    'apiKey':Parameters['Mode3'],}
-    url = Parameters['Mode1'] + 'api/getAllDevices'
-    headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
-    r = requests.post(url, json=data, headers=headers)
-#    Domoticz.Error(url)
-#    Domoticz.Error(r.text)
-
-#POST https://www.link-tap.com/api/getAllDevices
-#Please note: Rate limiting is applied for this API. The minimum interval of calling this API is 5 minutes.
-
-#Body object:
-#username: Required. String type. Your LinkTap account's username
-#apiKey: Required. String type. Your API key
-#Response (success):
-#result: 'ok'
-#devices: Array of device's info, including gateway and taplinker's online/offline status, device ID and name, remaining battery, wireless signal strength, current watering plan and watering status, etc.
-
-#Explanation of some fields:
-#workMode: currently activated work mode. ‘O’ is for Odd-Even Mode, ‘M’ is for Instant Mode, ‘I’ is for Interval Mode, ‘T’ is for 7-Day Mode, ‘Y’ is for Month Mode, ‘N’ means no work mode assigned.
-#slot: current watering plan. 'H' represents hour, 'M' represents minute, 'D' represents duration.
-#vel: latest flow rate (unit: ml per minute. For G2 and G2S only).
-#fall: fall incident flag (boolean. For G2 and G2S only).
-#valveBroken: valve failed to open flag (boolean. For G2 and G2S only).
-#noWater: water cut-off flag (boolean. For G2 and G2S only).
-#Response (failure):
-#result: 'error'
-#message: various error messages
-#Curl example:
-#curl -d "username=YourUsername&apiKey=YourApiKey" -X POST https://www.link-tap.com/api/getAllDevices
