@@ -66,7 +66,7 @@ class BasePlugin:
         self.taplinkers = dict() # All taplinkers by id
         self.devices = dict()
         self.gateways = dict()
-        self.types  = {'counters':'-243-30','modes':'-244-62'}
+        self.types  = {'counters':'-113-0', 'modes':'-244-62', 'alerts':'-243-22'}
         self.images = {'counters':'1','modes':'20'}
         self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'} 
         self.getAllDevices = dict()
@@ -85,20 +85,20 @@ class BasePlugin:
         self.CreateDevices()
 
     def onStop(self):
-        Domoticz.Log("onStop called")
+        Domoticz.Debug("onStop called")
 
     def onConnect(self, Connection, Status, Description):
-        Domoticz.Log("onConnect called")
+        Domoticz.Debug("onConnect called")
 
     def onMessage(self, Connection, Data):
-        Domoticz.Log("onMessage called")
+        Domoticz.Debug("onMessage called")
 
     def onCommand(self, Unit, Command, Level, Hue):
-        Domoticz.Log("onCommand called for Unit " + str(Unit) + ": Parameter '" + str(Command) + "', Level: " + str(Level))
+        Domoticz.Debug("onCommand called for Unit " + str(Unit) + ": Parameter '" + str(Command) + "', Level: " + str(Level))
         if Level == 10: method = "activateIntervalMode"
         elif Level == 20: method = "activateOddEvenMode"
         elif Level == 30: method = "activateSevenDayMode"
-        elif Levle == 40: method = "activateMonthMode"
+        elif Level == 40: method = "activateMonthMode"
         else: 
             Domoticz.Error("Unknown level received (" + str(Level) + "for device id " + str(Unit))
             return
@@ -114,40 +114,66 @@ class BasePlugin:
             Domoticz.Error('Error while retreiving datafor Taplinker ' + taplinkerId + ', result code is: ' + status['result'])
 
     def onNotification(self, Name, Subject, Text, Status, Priority, Sound, ImageFile):
-        Domoticz.Log("Notification: " + Name + "," + Subject + "," + Text + "," + Status + "," + str(Priority) + "," + Sound + "," + ImageFile)
+        Domoticz.Debug("Notification: " + Name + "," + Subject + "," + Text + "," + Status + "," + str(Priority) + "," + Sound + "," + ImageFile)
 
     def onDisconnect(self, Connection):
-        Domoticz.Log("onDisconnect called")
+        Domoticz.Debug("onDisconnect called")
 
     def onHeartbeat(self):
         self.timer += 1
         Domoticz.Debug("onHeartbeat called ")
-        if self.timer %  2 == 0: # Rate limiting is 30 seconds
+        if self.timer %  20 == 0: # Rate limiting is 5mn on this method call
             self.CreateDevices() # Call just in case hardware is added or devices are removed
+        if self.timer %  2 == 0: # Rate limiting is 30 seconds
             for gateway in self.getAllDevices['devices']:
                 for taplinker in gateway['taplinker']:
                     taplinkerId = taplinker['taplinkerId']
-                    if taplinkerId + self.types['counters'] in self.devices:
+                    if taplinkerId + self.types['counters'] or taplinkerId + self.types['alerts'] in self.devices:
                         token = {'username':Parameters["Username"],'apiKey':Parameters['Password'],'taplinkerId':taplinkerId}
                         post = requests.post(self.url + 'getWateringStatus', json=token, headers=self.headers)
                         status = json.loads(post.text)
                         vel = 0
+                        vol = 0
+                        currentStatus = ''
                         if status['result'] == 'ok':
                             if status['status'] is not None:
-                                vel=round(int(status['status']['vel'])/1000,1)
+                                vel = round(int(status['status']['vel'])/1000)
+                                vol = round(int(status['status']['vol'])/1000)
+                                currentStatus = 'Watering'
+                            else:
+                                currentStatus = 'Idle'
                         elif status['result'] == 'error':
                             Domoticz.Error('Error while retreiving data: ' + status['message'])
                         else:
                             Domoticz.Error('Error while retreiving data, result is: ' + status['result'])
-                        Devices[self.devices[taplinkerId + self.types['counters']]].Update(nValue=int(round(vel,0)), sValue=str(vel), SignalLevel=int(taplinker['signal']), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
-                        Domoticz.Log("Updated device: " + taplinker['taplinkerName'] + " with ID " + taplinkerId + ". Vel is " + str(vel))
+                        Devices[self.devices[taplinkerId + self.types['counters']]].Update(nValue=0, sValue=str(vol) + ';' + str(vel), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
+                        Domoticz.Log('Updated device counters: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId + '. Vel is ' + str(vel) + ', volume is ' + str(vol) + '. Signal is: ' + str(taplinker['signal']))
+                        if self.timer %  20 == 0: #Status info has been updated 
+                            alert = int((self.timer/20) % 5)
+                            #0 : Grey
+                            #1 : Green
+                            #2 : Greenish Yellow
+                            #3 : Orange
+                            #4 : Red
+                            workMode = taplinker['workMode']
+                            if workMode == 'M':
+                                currentStatus += ' Manual mode'
+                            elif workMode == 'I':
+                                currentStatus += ' Intervals mode'
+                            elif workMode == 'O':
+                                currentStatus += ' Odd/Even mode'
+                            elif workMode == 'T':
+                                currentStatus += ' Seven Days mode'
+                            elif workMode == 'N':
+                                currentStatus +=  ' Month mode'
+                            else:
+                                currentStatus += ' Unknown mode ' + workMode
+                            Devices[self.devices[taplinkerId + self.types['alerts']]].Update(nValue=alert, sValue=currentStatus, SignalLevel=int(taplinker['signal']/10), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
+                            Domoticz.Log('Updated device status: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId +'. Status is ' + currentStatus)
 
     # Function to create devices from LinkTap and refresh plugin's internal structures
     # Rate limiting is in place at LinkTap, minimum interval is 5 minutes
     def CreateDevices(self):
-        if self.timer % 300 != 0: # Rate limiting is 5 minutes
-            Domoticz.Debug("CreateDevices function called to early, rate limiting is 5mn")
-            return
         self.devices = dict()
         # Build list of current devices in Domoticz
         for device in Devices:
@@ -181,10 +207,12 @@ class BasePlugin:
                             Domoticz.Error("Maximum of 255 devices per hardware has been reached, can't create any more devices")
                             return
                         if type == 'counters':
-                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' Counters',  Unit=hole, TypeName='Waterflow',  DeviceID=taplinkerId).Create()
+                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' Counters',  Unit=hole, Type=113, Subtype=0 , Switchtype=2, DeviceID=taplinkerId).Create()
                         elif type == 'modes':
-                            Option1 = {"Scenes": "||||", "LevelActions": "||||", "LevelNames": "0|Intervals|Odd-Even|Seven days|Months", "LevelOffHidden": "true", "SelectorStyle": "1"}
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " Watering Modes",  DeviceID=taplinkerId, Image = 20, Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Option1, Used=1).Create()
+                            Options = {"Scenes": "||||", "LevelActions": "||||", "LevelNames": "0|Intervals|Odd-Even|Seven days|Months", "LevelOffHidden": "true", "SelectorStyle": "1"}
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " Watering Modes",  DeviceID=taplinkerId, Image = 20, Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
+                        elif type == 'alerts':
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " Alerts",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert').Create()
                         else :
                             Domoticz.Error("Device type " + type + " not implemented")
                             return
