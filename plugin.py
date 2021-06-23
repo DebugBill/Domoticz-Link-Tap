@@ -38,6 +38,7 @@
                 <option label="False" value=false/>
             </options>
         </param>
+        <param field="Mode2" label="Maximum Watering duration before automatic turn off (1 - 1439 sec)" width="40px" required="true" default=1439 />
         <param field="Mode6" label="Debug Level" width="300px">
             <options>
                 <option label="None" value="0"  default="true"/>
@@ -60,13 +61,14 @@ import requests
 class BasePlugin:
     enabled = False
     def __init__(self):
+        self.version = '0.1'
         self.timer = 0
         self.token = ''
         self.url = ''
         self.taplinkers = dict() # All taplinkers by id
         self.devices = dict()
         self.gateways = dict()
-        self.types  = {'counters':'-113-0', 'modes':'-244-62', 'alerts':'-243-22'}
+        self.types  = {'counters':'-113-0', 'modes':'-244-62', 'alerts':'-243-22', 'on-off':'-244-73'}
         self.images = {'counters':'1','modes':'20'}
         self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'} 
         self.getAllDevices = dict()
@@ -83,45 +85,54 @@ class BasePlugin:
         Domoticz.Debugging(int(Parameters["Mode6"]))
         Domoticz.Debug("onStart called")
         self.CreateDevices()
-
-    def onStop(self):
-        Domoticz.Debug("onStop called")
-
-    def onConnect(self, Connection, Status, Description):
-        Domoticz.Debug("onConnect called")
-
-    def onMessage(self, Connection, Data):
-        Domoticz.Debug("onMessage called")
+        self.CheckVersion()
 
     def onCommand(self, Unit, Command, Level, Hue):
-        Domoticz.Debug("onCommand called for Unit " + str(Unit) + ": Parameter '" + str(Command) + "', Level: " + str(Level))
-        if Level == 10: method = "activateIntervalMode"
-        elif Level == 20: method = "activateOddEvenMode"
-        elif Level == 30: method = "activateSevenDayMode"
-        elif Level == 40: method = "activateMonthMode"
-        else: 
-            Domoticz.Error("Unknown level received (" + str(Level) + "for device id " + str(Unit))
-            return
+        type = '-' + str(Devices[Unit].Type) + '-' + str(Devices[Unit].SubType)
         taplinkerId = Devices[Unit].DeviceID
-        token = {'username':Parameters["Username"],'apiKey':Parameters['Password'], 'gatewayId':self.gateways[taplinkerId], 'taplinkerId':taplinkerId}
-        post = requests.post(self.url + method, json=token, headers=self.headers)
-        status = json.loads(post.text)
-        if status['result'] == 'ok':
-            Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
-        elif status['result'] == 'error':
-            Domoticz.Error('Error sending command to taplinker ' + taplinkerId + ': ' + status['message'])
-        else:
-            Domoticz.Error('Error while retreiving datafor Taplinker ' + taplinkerId + ', result code is: ' + status['result'])
+        Domoticz.Debug("onCommand called for device " + str(Unit) + ": Parameter '" + str(Command) + "', Level: " + str(Level))
+        if type == self.types['modes']:
+            if Level == 10: method = "activateIntervalMode"
+            elif Level == 20: method = "activateOddEvenMode"
+            elif Level == 30: method = "activateSevenDayMode"
+            elif Level == 40: method = "activateMonthMode"
+            else: 
+                Domoticz.Error("Unknown level received (" + str(Level) + ") for device id " + str(Unit))
+                return
+            token = {'username':Parameters["Username"],'apiKey':Parameters['Password'], 'gatewayId':self.gateways[taplinkerId], 'taplinkerId':taplinkerId}
+            post = requests.post(self.url + method, json=token, headers=self.headers, timeout=1)
+            status = json.loads(post.text)
+            if status['result'] == 'ok':
+                Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
+            elif status['result'] == 'error':
+                Domoticz.Error('Error sending command to taplinker ' + taplinkerId + ': ' + status['message'])
+            else:
+                Domoticz.Error('Error while retreiving datafor Taplinker ' + taplinkerId + ', result code is: ' + status['result'])
+        elif type == self.types['on-off']:
+            method = "activateInstantMode"
+            if Command == 'On': switch = True
+            elif Command == 'Off': switch = False
+            else:
+                Domoticz.Error("Unknown command received (" + Command + ") for device id " + str(Unit))
+                return
+            duration = int(Parameters["Mode2"])
+            if duration > 1439 or duration < 1: duration = 1439
+            token = {'username':Parameters["Username"],'apiKey':Parameters['Password'], 'gatewayId':self.gateways[taplinkerId], 'taplinkerId':taplinkerId, 'action':switch, 'duration':duration, 'autoBack':Parameters["Mode1"]}
+            post = requests.post(self.url + method, json=token, headers=self.headers, timeout=1)
+            status = json.loads(post.text)
+            if status['result'] == 'ok':
+                Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
+                Devices[Unit].Update(nValue=switch, sValue="Test")
+            elif status['result'] == 'error':
+                Domoticz.Error('Error sending command to taplinker ' + taplinkerId + ': ' + status['message'])
+            else:
+                Domoticz.Error('Error while retreiving datafor Taplinker ' + taplinkerId + ', result code is: ' + status['result'])
 
-    def onNotification(self, Name, Subject, Text, Status, Priority, Sound, ImageFile):
-        Domoticz.Debug("Notification: " + Name + "," + Subject + "," + Text + "," + Status + "," + str(Priority) + "," + Sound + "," + ImageFile)
-
-    def onDisconnect(self, Connection):
-        Domoticz.Debug("onDisconnect called")
 
     def onHeartbeat(self):
         self.timer += 1
         Domoticz.Debug("onHeartbeat called ")
+        if self.timer % 480 == 0: self.CheckVersion() #Every 2 hours, check if new version is available
         if self.timer %  20 == 0: # Rate limiting is 5mn on this method call
             self.CreateDevices() # Call just in case hardware is added or devices are removed
         if self.timer %  2 == 0: # Rate limiting is 30 seconds
@@ -130,7 +141,7 @@ class BasePlugin:
                     taplinkerId = taplinker['taplinkerId']
                     if taplinkerId + self.types['counters'] or taplinkerId + self.types['alerts'] in self.devices:
                         token = {'username':Parameters["Username"],'apiKey':Parameters['Password'],'taplinkerId':taplinkerId}
-                        post = requests.post(self.url + 'getWateringStatus', json=token, headers=self.headers)
+                        post = requests.post(self.url + 'getWateringStatus', json=token, headers=self.headers, timeout=1)
                         status = json.loads(post.text)
                         vel = 0
                         vol = 0
@@ -181,7 +192,7 @@ class BasePlugin:
             self.devices[Devices[device].DeviceID + '-' + str(Devices[device].Type) + '-' + str(Devices[device].SubType)] = device
     
         # Build list of devices on API and create missing ones
-        post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers)
+        post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers, timeout=1)
         self.getAllDevices = json.loads(post.text)
         for gateway in self.getAllDevices['devices']:
             gatewayName = gateway['name']
@@ -207,18 +218,31 @@ class BasePlugin:
                             Domoticz.Error("Maximum of 255 devices per hardware has been reached, can't create any more devices")
                             return
                         if type == 'counters':
-                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' Counters',  Unit=hole, Type=113, Subtype=0 , Switchtype=2, DeviceID=taplinkerId).Create()
+                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' - Counters',  Unit=hole, Type=113, Subtype=0 , Switchtype=2, DeviceID=taplinkerId).Create()
                         elif type == 'modes':
                             Options = {"Scenes": "||||", "LevelActions": "||||", "LevelNames": "0|Intervals|Odd-Even|Seven days|Months", "LevelOffHidden": "true", "SelectorStyle": "1"}
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " Watering Modes",  DeviceID=taplinkerId, Image = 20, Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Watering Modes",  DeviceID=taplinkerId, Image = 20, Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
                         elif type == 'alerts':
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " Alerts",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert').Create()
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Alerts",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert').Create()
+                        elif type == 'on-off':
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - On/Off",  DeviceID=taplinkerId, Unit=hole, Type=244, Subtype=73 , Switchtype=0).Create()
                         else :
                             Domoticz.Error("Device type " + type + " not implemented")
                             return
                         self.devices[taplinkerId + self.types[type]] = hole
                         Domoticz.Log("Device " + taplinker['taplinkerName'] + " of type '" + type + "' with ID " +taplinkerId + " created")
 
+    # Function to check on GitHub if a new release of the plugin is available
+    def CheckVersion(self):
+        post = requests.get('https://api.github.com/repos/DebugBill/Link-Tap/releases/latest', headers={'Accept': 'application/vnd.github.v3+json'}, timeout=1)
+        if 'tag_name' in json.loads(post.text): 
+            version = str(json.loads(post.text)['tag_name'])
+            if version != self.version:
+                Domoticz.Error("Newer version of Link-Tap plugin is available: " + version + ". Current version is: " + self.version)
+            else:
+                Domoticz.Log("Current version (" + self.version + ") of Link-Tap plugin is up to date")
+        else: 
+            Domoticz.Log('Could not contact GitHub to check for latest version')
 
 global _plugin
 _plugin = BasePlugin()
@@ -227,97 +251,10 @@ def onStart():
     global _plugin
     _plugin.onStart()
 
-def onStop():
-    global _plugin
-    _plugin.onStop()
-
-def onConnect(Connection, Status, Description):
-    global _plugin
-    _plugin.onConnect(Connection, Status, Description)
-
-def onMessage(Connection, Data):
-    global _plugin
-    _plugin.onMessage(Connection, Data)
-
 def onCommand(Unit, Command, Level, Hue):
     global _plugin
     _plugin.onCommand(Unit, Command, Level, Hue)
 
-def onNotification(Name, Subject, Text, Status, Priority, Sound, ImageFile):
-    global _plugin
-    _plugin.onNotification(Name, Subject, Text, Status, Priority, Sound, ImageFile)
-
-def onDisconnect(Connection):
-    global _plugin
-    _plugin.onDisconnect(Connection)
-
 def onHeartbeat():
     global _plugin
     _plugin.onHeartbeat()
-
-
-    # Generic helper functions
-def DumpConfigToLog():
-    for x in Parameters:
-        if Parameters[x] != "":
-            Domoticz.Debug( "'" + x + "':'" + str(Parameters[x]) + "'")
-    Domoticz.Debug("Device count: " + str(len(Devices)))
-    for x in Devices:
-        Domoticz.Debug("Device:           " + str(x) + " - " + str(Devices[x]))
-        Domoticz.Debug("Device ID:       '" + str(Devices[x].ID) + "'")
-        Domoticz.Debug("Device Name:     '" + Devices[x].Name + "'")
-        Domoticz.Debug("Device nValue:    " + str(Devices[x].nValue))
-        Domoticz.Debug("Device sValue:   '" + Devices[x].sValue + "'")
-        Domoticz.Debug("Device LastLevel: " + str(Devices[x].LastLevel))
-    return
-
-
-def DumpDevicesToLog():
-    # Show devices
-    Domoticz.Debug("Device count.........: {}".format(len(Devices)))
-    for x in Devices:
-        Domoticz.Debug("Device...............: {} - {}".format(x, Devices[x]))
-        Domoticz.Debug("Device Idx...........: {}".format(Devices[x].ID))
-        Domoticz.Debug(
-            "Device Type..........: {} / {}".format(Devices[x].Type, Devices[x].SubType)
-        )
-        Domoticz.Debug("Device Name..........: '{}'".format(Devices[x].Name))
-        Domoticz.Debug("Device nValue........: {}".format(Devices[x].nValue))
-        Domoticz.Debug("Device sValue........: '{}'".format(Devices[x].sValue))
-        Domoticz.Debug("Device Options.......: '{}'".format(Devices[x].Options))
-        Domoticz.Debug("Device Used..........: {}".format(Devices[x].Used))
-        Domoticz.Debug("Device ID............: '{}'".format(Devices[x].DeviceID))
-        Domoticz.Debug("Device LastLevel.....: {}".format(Devices[x].LastLevel))
-        Domoticz.Debug("Device Image.........: {}".format(Devices[x].Image))
-
-
-def DumpImagesToLog():
-    # Show images
-    Domoticz.Debug("Image count..........: {}".format((len(Images))))
-    for x in Images:
-        Domoticz.Debug("Image '{}'...: '{}'".format(x, Images[x]))
-
-
-def DumpParametersToLog():
-    # Show parameters
-    Domoticz.Debug("Parameters count.....: {}".format(len(Parameters)))
-    for x in Parameters:
-        if Parameters[x] != "":
-            Domoticz.Debug("Parameter '{}'...: '{}'".format(x, Parameters[x]))
-
-
-def DumpSettingsToLog():
-    # Show settings
-    Domoticz.Debug("Settings count.......: {}".format(len(Settings)))
-    for x in Settings:
-        Domoticz.Debug("Setting '{}'...: '{}'".format(x, Settings[x]))
-
-
-def DumpAllToLog():
-    DumpDevicesToLog()
-    DumpImagesToLog()
-    DumpParametersToLog()
-    DumpSettingsToLog()
-    return
-
-
