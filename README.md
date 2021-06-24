@@ -1,6 +1,6 @@
 # Link-Tap
 
-Link-Tap (https://link-tap.com) is a wireless watering system with a cloud located controler. It is accessible through a web site, mobile apps and an API.  
+Link-Tap (https://www.link-tap.com/) is a wireless watering system with a cloud located controler. It is accessible through a web site, mobile apps and an API.  
 
 This project is a plugin to be added to the "Domoticz" home automation package (https://www.domoticz.com)
 
