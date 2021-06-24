@@ -8,7 +8,7 @@
 # Author: DebugBill June 2021
 #
 """
-<plugin key="linktap" name="Link-Tap Watering System plugin" author="DebugBill" version="0.1" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
+<plugin key="linktap" name="Link-Tap Watering System" author="DebugBill" version="0.1" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
     <description>
         <h2>Link-Tap watering system</h2><br/>
         This plugin will allow Domoticz to read data from the Link-Tap cloud API. <br/>
@@ -23,13 +23,16 @@
             <li>Displays alerts if any</li>
         </ul>
         <h3>Devices</h3>
+        Four device are created for each Linkt-Tap box
         <ul style="list-style-type:square">
-            <li>Device Type - What it does...</li>
+            <li>Mode: allows for selecting the watering more</li>
+            <li>Status: Displays alerts collected by Link-Tap</li>
+            <li>Counters: Total volume and instant flow</li>
+            <li>On/Off: Immediate On or Off in instant mode</li>
         </ul>
         <h3>Configuration</h3>
     </description>
     <params>
-        <param field="Address" label="Link-Tap API URL" width="300px" required="true" default="https://www.link-tap.com/"/>
         <param field="Username" label="User" width="300px" required="true"/>
         <param field="Password" label="Key" width="300px" required="true"/>
         <param field="Mode1" label="Return to previous wateting mode after manual mode" width="50px">
@@ -64,12 +67,12 @@ class BasePlugin:
         self.version = '0.1'
         self.timer = 0
         self.token = ''
-        self.url = ''
+        self.url = 'https://www.link-tap.com/'
         self.taplinkers = dict() # All taplinkers by id
         self.devices = dict()
         self.gateways = dict()
-        self.types  = {'counters':'-113-0', 'modes':'-244-62', 'alerts':'-243-22', 'on-off':'-244-73'}
-        self.images = {'counters':'1','modes':'20'}
+        self.types  = {'counters':'-113-0', 'modes':'-244-62', 'status':'-243-22', 'on-off':'-244-73'}
+        self.images = {'counters':1,'modes':20, 'status':20}
         self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'} 
         self.getAllDevices = dict()
 
@@ -77,7 +80,7 @@ class BasePlugin:
         # Rate limiting is in place at Link-Tap, highest freq is 15 sec
         Domoticz.Heartbeat(15)
         self.token = {'username':Parameters["Username"],'apiKey':Parameters['Password']}
-        self.url = Parameters['Address']
+        Parameters['Address'] = self.url
         if self.url[-1] == '/':
             self.url += 'api/'
         else:
@@ -139,7 +142,7 @@ class BasePlugin:
             for gateway in self.getAllDevices['devices']:
                 for taplinker in gateway['taplinker']:
                     taplinkerId = taplinker['taplinkerId']
-                    if taplinkerId + self.types['counters'] or taplinkerId + self.types['alerts'] in self.devices:
+                    if taplinkerId + self.types['counters'] or taplinkerId + self.types['status'] in self.devices:
                         token = {'username':Parameters["Username"],'apiKey':Parameters['Password'],'taplinkerId':taplinkerId}
                         post = requests.post(self.url + 'getWateringStatus', json=token, headers=self.headers, timeout=1)
                         status = json.loads(post.text)
@@ -151,8 +154,12 @@ class BasePlugin:
                                 vel = round(int(status['status']['vel'])/1000)
                                 vol = round(int(status['status']['vol'])/1000)
                                 currentStatus = 'Watering'
+                                if Devices[self.devices[taplinkerId + self.types['on-off']]].nValue == False:
+                                    Devices[self.devices[taplinkerId + self.types['on-off']]].Update(nValue = True, sValue = 'On')
                             else:
                                 currentStatus = 'Idle'
+                                if Devices[self.devices[taplinkerId + self.types['on-off']]].nValue == True:
+                                    Devices[self.devices[taplinkerId + self.types['on-off']]].Update(nValue = False, sValue = 'Off')
                         elif status['result'] == 'error':
                             Domoticz.Error('Error while retreiving data: ' + status['message'])
                         else:
@@ -160,12 +167,28 @@ class BasePlugin:
                         Devices[self.devices[taplinkerId + self.types['counters']]].Update(nValue=0, sValue=str(vol) + ';' + str(vel), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
                         Domoticz.Log('Updated device counters: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId + '. Vel is ' + str(vel) + ', volume is ' + str(vol) + '. Signal is: ' + str(taplinker['signal']))
                         if self.timer %  20 == 0: #Status info has been updated 
-                            alert = int((self.timer/20) % 5)
+                            alert = 1
+                            alertText = ' Alert(s):'
                             #0 : Grey
                             #1 : Green
                             #2 : Greenish Yellow
                             #3 : Orange
                             #4 : Red
+                            if taplinker['fall']:
+                                alert =4
+                                alertText +=' fall'
+                            if taplinker['noWater']:
+                                alert =4
+                                alertText += ' No water'
+                            if taplinker['leakFlag']:
+                                alert =4
+                                alertText += ' Leak'
+                            if taplinker['clogFlag']:
+                                alert =4
+                                alertText += ' Clog'
+                            if taplinker['valveBroken']:
+                                alert =4
+                                alertText +=' Valve broken'
                             workMode = taplinker['workMode']
                             if workMode == 'M':
                                 currentStatus += ' Manual mode'
@@ -179,7 +202,9 @@ class BasePlugin:
                                 currentStatus +=  ' Month mode'
                             else:
                                 currentStatus += ' Unknown mode ' + workMode
-                            Devices[self.devices[taplinkerId + self.types['alerts']]].Update(nValue=alert, sValue=currentStatus, SignalLevel=int(taplinker['signal']/10), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
+                            if alert == 4: 
+                                currentStatus += alertText
+                            Devices[self.devices[taplinkerId + self.types['status']]].Update(nValue=alert, sValue=currentStatus, SignalLevel=int(taplinker['signal']/10), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
                             Domoticz.Log('Updated device status: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId +'. Status is ' + currentStatus)
 
     # Function to create devices from LinkTap and refresh plugin's internal structures
@@ -218,12 +243,12 @@ class BasePlugin:
                             Domoticz.Error("Maximum of 255 devices per hardware has been reached, can't create any more devices")
                             return
                         if type == 'counters':
-                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' - Counters',  Unit=hole, Type=113, Subtype=0 , Switchtype=2, DeviceID=taplinkerId).Create()
+                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' - Counters',  Unit=hole, Type=113, Subtype=0 , Switchtype=2, DeviceID=taplinkerId, Image = self.images['counters']).Create()
                         elif type == 'modes':
                             Options = {"Scenes": "||||", "LevelActions": "||||", "LevelNames": "0|Intervals|Odd-Even|Seven days|Months", "LevelOffHidden": "true", "SelectorStyle": "1"}
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Watering Modes",  DeviceID=taplinkerId, Image = 20, Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
-                        elif type == 'alerts':
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Alerts",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert').Create()
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Watering Modes",  DeviceID=taplinkerId, Image = self.images['modes'], Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
+                        elif type == 'status':
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Status",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert', Image = self.images['status']).Create()
                         elif type == 'on-off':
                             Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - On/Off",  DeviceID=taplinkerId, Unit=hole, Type=244, Subtype=73 , Switchtype=0).Create()
                         else :
