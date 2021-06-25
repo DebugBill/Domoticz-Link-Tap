@@ -23,11 +23,12 @@
             <li>Displays alerts if any</li>
         </ul>
         <h3>Devices</h3>
-        Four device are created for each Linkt-Tap box
+        Five devices are created for each Linkt-Tap box
         <ul style="list-style-type:square">
             <li>Mode: allows for selecting the watering more</li>
             <li>Status: Displays alerts collected by Link-Tap</li>
-            <li>Counters: Total volume and instant flow</li>
+            <li>Flow: Instant flow in l/mn</li>
+            <li>Volume: Total volume of last watering cycle</li>
             <li>On/Off: Immediate On or Off in instant mode</li>
         </ul>
         <h3>Configuration</h3>
@@ -67,12 +68,12 @@ class BasePlugin:
         self.version = '0.1'
         self.timer = 0
         self.token = ''
-        self.url = 'https://www.link-tap.com/'
+        self.url = 'https://www.link-tap.com/api/'
         self.taplinkers = dict() # All taplinkers by id
         self.devices = dict()
         self.gateways = dict()
-        self.types  = {'counters':'-113-0', 'modes':'-244-62', 'status':'-243-22', 'on-off':'-244-73'}
-        self.images = {'counters':1,'modes':20, 'status':20}
+        self.types  = {'flow':'-243-30', 'volume':'-243-33', 'modes':'-244-62', 'status':'-243-22', 'on-off':'-244-73'}
+        self.images = {'modes':20, 'status':20}
         self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'} 
         self.getAllDevices = dict()
 
@@ -80,11 +81,6 @@ class BasePlugin:
         # Rate limiting is in place at Link-Tap, highest freq is 15 sec
         Domoticz.Heartbeat(15)
         self.token = {'username':Parameters["Username"],'apiKey':Parameters['Password']}
-        Parameters['Address'] = self.url
-        if self.url[-1] == '/':
-            self.url += 'api/'
-        else:
-            self.url += '/api/'
         Domoticz.Debugging(int(Parameters["Mode6"]))
         Domoticz.Debug("onStart called")
         self.CreateDevices()
@@ -103,7 +99,7 @@ class BasePlugin:
                 Domoticz.Error("Unknown level received (" + str(Level) + ") for device id " + str(Unit))
                 return
             token = {'username':Parameters["Username"],'apiKey':Parameters['Password'], 'gatewayId':self.gateways[taplinkerId], 'taplinkerId':taplinkerId}
-            post = requests.post(self.url + method, json=token, headers=self.headers, timeout=1)
+            post = requests.post(self.url + method, json=token, headers=self.headers, timeout=2)
             status = json.loads(post.text)
             if status['result'] == 'ok':
                 Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
@@ -121,7 +117,7 @@ class BasePlugin:
             duration = int(Parameters["Mode2"])
             if duration > 1439 or duration < 1: duration = 1439
             token = {'username':Parameters["Username"],'apiKey':Parameters['Password'], 'gatewayId':self.gateways[taplinkerId], 'taplinkerId':taplinkerId, 'action':switch, 'duration':duration, 'autoBack':Parameters["Mode1"]}
-            post = requests.post(self.url + method, json=token, headers=self.headers, timeout=1)
+            post = requests.post(self.url + method, json=token, headers=self.headers, timeout=2)
             status = json.loads(post.text)
             if status['result'] == 'ok':
                 Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
@@ -142,31 +138,37 @@ class BasePlugin:
             for gateway in self.getAllDevices['devices']:
                 for taplinker in gateway['taplinker']:
                     taplinkerId = taplinker['taplinkerId']
-                    if taplinkerId + self.types['counters'] or taplinkerId + self.types['status'] in self.devices:
+                    if taplinkerId + self.types['flow'] or taplinkerId + self.types['volume'] or taplinkerId + self.types['status'] in self.devices:
                         token = {'username':Parameters["Username"],'apiKey':Parameters['Password'],'taplinkerId':taplinkerId}
-                        post = requests.post(self.url + 'getWateringStatus', json=token, headers=self.headers, timeout=1)
+                        post = requests.post(self.url + 'getWateringStatus', json=token, headers=self.headers, timeout=2)
                         status = json.loads(post.text)
                         vel = 0
                         vol = 0
                         currentStatus = ''
                         if status['result'] == 'ok':
+                            updateNeeded = False
                             if status['status'] is not None:
                                 vel = round(int(status['status']['vel'])/1000)
                                 vol = round(int(status['status']['vol'])/1000)
                                 currentStatus = 'Watering'
                                 if Devices[self.devices[taplinkerId + self.types['on-off']]].nValue == False:
+                                    updateNeeded = True
                                     Devices[self.devices[taplinkerId + self.types['on-off']]].Update(nValue = True, sValue = 'On')
                             else:
                                 currentStatus = 'Idle'
                                 if Devices[self.devices[taplinkerId + self.types['on-off']]].nValue == True:
+                                    updateNeeded = True
                                     Devices[self.devices[taplinkerId + self.types['on-off']]].Update(nValue = False, sValue = 'Off')
                         elif status['result'] == 'error':
                             Domoticz.Error('Error while retreiving data: ' + status['message'])
                         else:
                             Domoticz.Error('Error while retreiving data, result is: ' + status['result'])
-                        Devices[self.devices[taplinkerId + self.types['counters']]].Update(nValue=0, sValue=str(vol) + ';' + str(vel), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
+                        if  taplinkerId + self.types['flow'] in self.devices:
+                            Devices[self.devices[taplinkerId + self.types['flow']]].Update(nValue=0, sValue=str(vel), BatteryLevel=int(taplinker['batteryStatus'][:-1]), SignalLevel=int((taplinker['signal']+5)/10))
+                        if  taplinkerId + self.types['volume'] in self.devices and currentStatus == 'Watering': # Don't reset volume at the end of a watering cycle
+                            Devices[self.devices[taplinkerId + self.types['volume']]].Update(nValue=0, sValue=str(vol), BatteryLevel=int(taplinker['batteryStatus'][:-1]), SignalLevel=int((taplinker['signal']+5)/10))
                         Domoticz.Log('Updated device counters: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId + '. Vel is ' + str(vel) + ', volume is ' + str(vol) + '. Signal is: ' + str(taplinker['signal']))
-                        if self.timer %  20 == 0: #Status info has been updated 
+                        if self.timer %  20 == 0 or updateNeeded: #Status info has been updated are change on/off has been detected 
                             alert = 1
                             alertText = ' Alert(s):'
                             #0 : Grey
@@ -204,7 +206,7 @@ class BasePlugin:
                                 currentStatus += ' Unknown mode ' + workMode
                             if alert == 4: 
                                 currentStatus += alertText
-                            Devices[self.devices[taplinkerId + self.types['status']]].Update(nValue=alert, sValue=currentStatus, SignalLevel=int(taplinker['signal']/10), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
+                            Devices[self.devices[taplinkerId + self.types['status']]].Update(nValue=alert, sValue=currentStatus, SignalLevel=int((taplinker['signal']+5)/10), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
                             Domoticz.Log('Updated device status: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId +'. Status is ' + currentStatus)
 
     # Function to create devices from LinkTap and refresh plugin's internal structures
@@ -217,7 +219,7 @@ class BasePlugin:
             self.devices[Devices[device].DeviceID + '-' + str(Devices[device].Type) + '-' + str(Devices[device].SubType)] = device
     
         # Build list of devices on API and create missing ones
-        post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers, timeout=1)
+        post = requests.post(self.url + 'getAllDevices', json=self.token, headers=self.headers, timeout=2)
         self.getAllDevices = json.loads(post.text)
         for gateway in self.getAllDevices['devices']:
             gatewayName = gateway['name']
@@ -242,15 +244,17 @@ class BasePlugin:
                         if hole > 255:
                             Domoticz.Error("Maximum of 255 devices per hardware has been reached, can't create any more devices")
                             return
-                        if type == 'counters':
-                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' - Counters',  Unit=hole, Type=113, Subtype=0 , Switchtype=2, DeviceID=taplinkerId, Image = self.images['counters']).Create()
+                        if type == 'flow':
+                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' - Flow',  Unit=hole, Type=243, Subtype=30, DeviceID=taplinkerId).Create()
+                        elif type == 'volume':
+                            Domoticz.Device(Name=gatewayName + " - " + taplinker['taplinkerName'] + ' - Volume',  Unit=hole, Type=243, Subtype=33, Switchtype=2, DeviceID=taplinkerId).Create()
                         elif type == 'modes':
                             Options = {"Scenes": "||||", "LevelActions": "||||", "LevelNames": "0|Intervals|Odd-Even|Seven days|Months", "LevelOffHidden": "true", "SelectorStyle": "1"}
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Watering Modes",  DeviceID=taplinkerId, Image = self.images['modes'], Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Watering Modes",  DeviceID=taplinkerId, Image = 20, Unit=hole, Type=244, Subtype=62 , Switchtype=18, Options = Options).Create()
                         elif type == 'status':
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Status",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert', Image = self.images['status']).Create()
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - Status",  DeviceID=taplinkerId, Unit=hole, TypeName='Alert').Create()
                         elif type == 'on-off':
-                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - On/Off",  DeviceID=taplinkerId, Unit=hole, Type=244, Subtype=73 , Switchtype=0).Create()
+                            Domoticz.Device(Name = gatewayName + " - " + taplinker['taplinkerName'] + " - On/Off",  DeviceID=taplinkerId, Unit=hole, Type=244, Subtype=73 , Switchtype=0, Image=20).Create()
                         else :
                             Domoticz.Error("Device type " + type + " not implemented")
                             return
@@ -259,7 +263,7 @@ class BasePlugin:
 
     # Function to check on GitHub if a new release of the plugin is available
     def CheckVersion(self):
-        post = requests.get('https://api.github.com/repos/DebugBill/Link-Tap/releases/latest', headers={'Accept': 'application/vnd.github.v3+json'}, timeout=1)
+        post = requests.get('https://api.github.com/repos/DebugBill/Link-Tap/releases/latest', headers={'Accept': 'application/vnd.github.v3+json'}, timeout=2)
         if 'tag_name' in json.loads(post.text): 
             version = str(json.loads(post.text)['tag_name'])
             if version != self.version:

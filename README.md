@@ -16,6 +16,6 @@ Configuration is very simple
 - Create an API key associated with your account on Link-Tap (https://www.link-tap.com/#!/api-for-developers)
 - Enter you user name and key in the configuration page
 - Restart Domoticz
-Four devices will be automatically created for each of your link-tap boxes up to a maximum of 255
+Five devices will be automatically created for each of your link-tap boxes up to a maximum of 255
 You can act on those devices in the exact same way you act on any standard Domotics device.
 
