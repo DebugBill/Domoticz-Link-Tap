@@ -8,7 +8,7 @@
 # Author: DebugBill June 2021
 #
 """
-<plugin key="linktap" name="Link-Tap Watering System" author="DebugBill" version="0.1" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
+<plugin key="linktap" name="Link-Tap Watering System" author="DebugBill" version="0.2" wikilink="http://www.domoticz.com/wiki/plugins/plugin.html" externallink="https://github.com/DebugBill/Link-Tap">
     <description>
         <h2>Link-Tap watering system</h2><br/>
         This plugin will allow Domoticz to read data from the Link-Tap cloud API. <br/>
@@ -65,13 +65,14 @@ import requests
 class BasePlugin:
     enabled = False
     def __init__(self):
-        self.version = '0.1'
+        self.version = '0.2'
         self.timer = 0
         self.token = ''
         self.url = 'https://www.link-tap.com/api/'
         self.taplinkers = dict() # All taplinkers by id
-        self.devices = dict()
-        self.gateways = dict()
+        self.devices = dict() # Cross reference beetwen Lin-Tap Ids and Domoticz IDs
+        self.gateways = dict() # gateways each link-Tap device is attached to
+        self.updateNeeded = dict() #taplinkers in need of an update of their status
         self.types  = {'flow':'-243-30', 'volume':'-243-33', 'modes':'-244-62', 'status':'-243-22', 'on-off':'-244-73'}
         self.images = {'modes':20, 'status':20}
         self.headers = {'Content-type': 'application/json', 'Accept': 'text/plain'} 
@@ -103,10 +104,11 @@ class BasePlugin:
             status = json.loads(post.text)
             if status['result'] == 'ok':
                 Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
+                self.updateNeeded[taplinkerId] = True
             elif status['result'] == 'error':
                 Domoticz.Error('Error sending command to taplinker ' + taplinkerId + ': ' + status['message'])
             else:
-                Domoticz.Error('Error while retreiving datafor Taplinker ' + taplinkerId + ', result code is: ' + status['result'])
+                Domoticz.Error('Error while retreiving datafor Tap linker ' + taplinkerId + ', result code is: ' + status['result'])
         elif type == self.types['on-off']:
             method = "activateInstantMode"
             if Command == 'On': switch = True
@@ -122,6 +124,7 @@ class BasePlugin:
             if status['result'] == 'ok':
                 Domoticz.Log('Command sent successfully to Taplinker ' + taplinkerId)
                 Devices[Unit].Update(nValue=switch, sValue="Test")
+                self.updateNeeded[taplinkerId] = True
             elif status['result'] == 'error':
                 Domoticz.Error('Error sending command to taplinker ' + taplinkerId + ': ' + status['message'])
             else:
@@ -133,8 +136,8 @@ class BasePlugin:
         Domoticz.Debug("onHeartbeat called ")
         if self.timer % 480 == 0: self.CheckVersion() #Every 2 hours, check if new version is available
         if self.timer %  20 == 0: # Rate limiting is 5mn on this method call
-            self.CreateDevices() # Call just in case hardware is added or devices are removed
-        if self.timer %  2 == 0: # Rate limiting is 30 seconds
+            self.CreateDevices() # Call just in case hardware is added or devices are removed. Refresh self.getAllDevices
+        if self.timer %  2 == 0: # Rate limiting is 30 seconds for single taplinker API call (only valid during active watering)
             for gateway in self.getAllDevices['devices']:
                 for taplinker in gateway['taplinker']:
                     taplinkerId = taplinker['taplinkerId']
@@ -146,29 +149,35 @@ class BasePlugin:
                         vol = 0
                         currentStatus = ''
                         if status['result'] == 'ok':
-                            updateNeeded = False
                             if status['status'] is not None:
                                 vel = round(int(status['status']['vel'])/1000)
                                 vol = round(int(status['status']['vol'])/1000)
                                 currentStatus = 'Watering'
+                                # Check if current position of swith is in sync with real device, if not, update
                                 if Devices[self.devices[taplinkerId + self.types['on-off']]].nValue == False:
-                                    updateNeeded = True
+                                    self.updateNeeded[taplinkerId] = True
                                     Devices[self.devices[taplinkerId + self.types['on-off']]].Update(nValue = True, sValue = 'On')
                             else:
                                 currentStatus = 'Idle'
                                 if Devices[self.devices[taplinkerId + self.types['on-off']]].nValue == True:
-                                    updateNeeded = True
+                                    self.updateNeeded[taplinkerId] = True
                                     Devices[self.devices[taplinkerId + self.types['on-off']]].Update(nValue = False, sValue = 'Off')
                         elif status['result'] == 'error':
                             Domoticz.Error('Error while retreiving data: ' + status['message'])
+                            break # Try next LinkTap device
                         else:
                             Domoticz.Error('Error while retreiving data, result is: ' + status['result'])
-                        if  taplinkerId + self.types['flow'] in self.devices:
+                            break  #Try next LinkTap device
+                        # If we are here, we got valid data from API and we can continue
+                        if  taplinkerId + self.types['flow'] in self.devices: # Update flow in any case
                             Devices[self.devices[taplinkerId + self.types['flow']]].Update(nValue=0, sValue=str(vel), BatteryLevel=int(taplinker['batteryStatus'][:-1]), SignalLevel=int((taplinker['signal']+5)/10))
                         if  taplinkerId + self.types['volume'] in self.devices and currentStatus == 'Watering': # Don't reset volume at the end of a watering cycle
                             Devices[self.devices[taplinkerId + self.types['volume']]].Update(nValue=0, sValue=str(vol), BatteryLevel=int(taplinker['batteryStatus'][:-1]), SignalLevel=int((taplinker['signal']+5)/10))
                         Domoticz.Log('Updated device counters: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId + '. Vel is ' + str(vel) + ', volume is ' + str(vol) + '. Signal is: ' + str(taplinker['signal']))
-                        if self.timer %  20 == 0 or updateNeeded: #Status info has been updated are change on/off has been detected 
+                        if self.updateNeeded[taplinkerId]: #Alert info has been updated or change on/off has been detected 
+                            self.UpdateStatus(taplinker, currentStatus)
+                            return
+
                             alert = 1
                             alertText = ' Alert(s):'
                             #0 : Grey
@@ -225,6 +234,7 @@ class BasePlugin:
             gatewayName = gateway['name']
             for taplinker in gateway['taplinker']:
                 taplinkerId = taplinker['taplinkerId']
+                self.updateNeeded[taplinkerId]=  True
                 self.gateways[taplinkerId] = gateway['gatewayId']
                 self.taplinkers[taplinkerId] = taplinker['taplinkerName']
                 for type in self.types:
@@ -261,13 +271,58 @@ class BasePlugin:
                         self.devices[taplinkerId + self.types[type]] = hole
                         Domoticz.Log("Device " + taplinker['taplinkerName'] + " of type '" + type + "' with ID " +taplinkerId + " created")
 
+    # Function to update Status devices if needed
+    def UpdateStatus(self, taplinker, currentStatus):
+        taplinkerId = taplinker['taplinkerId']
+        alert = 1
+        alertText = ' Alert(s):'
+        #0 : Grey
+        #1 : Green
+        #2 : Greenish Yellow
+        #3 : Orange
+        #4 : Red
+        if taplinker['fall']:
+            alert =4
+            alertText +=' fall'
+        if taplinker['noWater']:
+            alert =4
+            alertText += ' No water'
+        if taplinker['leakFlag']:
+            alert =4
+            alertText += ' Leak'
+        if taplinker['clogFlag']:
+            alert =4
+            alertText += ' Clog'
+        if taplinker['valveBroken']:
+            alert =4
+            alertText +=' Valve broken'
+        workMode = taplinker['workMode']
+        if workMode == 'M':
+            currentStatus += ' Manual mode'
+        elif workMode == 'I':
+            currentStatus += ' Intervals mode'
+        elif workMode == 'O':
+            currentStatus += ' Odd/Even mode'
+        elif workMode == 'T':
+            currentStatus += ' Seven Days mode'
+        elif workMode == 'N':
+            currentStatus +=  ' Month mode'
+        else:
+            currentStatus += ' Unknown mode ' + workMode
+        if alert == 4:
+            currentStatus += alertText
+        Devices[self.devices[taplinkerId + self.types['status']]].Update(nValue=alert, sValue=currentStatus, SignalLevel=int((taplinker['signal']+5)/10), BatteryLevel=int(taplinker['batteryStatus'][:-1]))
+        Domoticz.Log('Updated device status: ' + taplinker['taplinkerName'] + ' with ID ' + taplinkerId +'. Status is ' + currentStatus)
+        self.updateNeeded[taplinkerId] = False
+
+
     # Function to check on GitHub if a new release of the plugin is available
     def CheckVersion(self):
         post = requests.get('https://api.github.com/repos/DebugBill/Link-Tap/releases/latest', headers={'Accept': 'application/vnd.github.v3+json'}, timeout=2)
         if 'tag_name' in json.loads(post.text): 
             version = str(json.loads(post.text)['tag_name'])
             if version != self.version:
-                Domoticz.Error("Newer version of Link-Tap plugin is available: " + version + ". Current version is: " + self.version)
+                Domoticz.Error("A newer version of Link-Tap plugin is available: " + version + ". Current version is: " + self.version)
             else:
                 Domoticz.Log("Current version (" + self.version + ") of Link-Tap plugin is up to date")
         else: 
